@@ -14,6 +14,10 @@ dependencies = [
   "opencv-python-headless>=4.10,<5",
   "numpy>=2,<3",
   "pydantic-settings>=2,<3",
+  "encodec>=0.1.1,<0.2",
+  "torch>=2.0,<3",
+  "torchaudio>=2.0,<3",
+  "soundfile>=0.12,<1",
 ]
 
 [project.optional-dependencies]
