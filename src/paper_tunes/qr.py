@@ -1,42 +1,45 @@
-"""QR generation and decoding primitives."""
-
 from __future__ import annotations
 
 import cv2
-import qrcode
-from PIL import Image
-
-from .qr_protocol import Chunk, decode_chunk, encode_chunk
+import numpy as np
 
 
-def split_bytes(data: bytes, chunk_size: int) -> list[bytes]:
-    if chunk_size < 1:
-        raise ValueError("chunk_size must be positive")
-    return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)] or [b""]
+class QRDecodeError(ValueError):
+    pass
 
 
-def make_qr_images(data: bytes, session: str, chunk_size: int = 700) -> list[Image.Image]:
-    chunks = split_bytes(data, chunk_size)
-    total = len(chunks)
-    images: list[Image.Image] = []
-    for index, chunk in enumerate(chunks):
-        text = encode_chunk(session, index, total, chunk)
-        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
-        qr.add_data(text)
-        qr.make(fit=True)
-        images.append(qr.make_image())
-    return images
+def _variants(image: np.ndarray):
+    yield image
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    yield gray
+    yield cv2.equalizeHist(gray)
+    yield cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    for scale in (1.5, 2.0):
+        yield cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
 
-def decode_qr_image(image: Image.Image) -> list[Chunk]:
+def decode_qr_codes(image_bytes: bytes) -> list[str]:
+    """Return all unique QR payloads found in an uploaded image."""
+    encoded = np.frombuffer(image_bytes, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None:
+        raise QRDecodeError("The upload is not a supported image")
+
     detector = cv2.QRCodeDetector()
-    frame = cv2.cvtColor(__import__("numpy").array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
-    values, _, _ = detector.detectAndDecodeMulti(frame)
-    if values is None:
-        value, _, _ = detector.detectAndDecode(frame)
-        values = [value] if value else []
-    result = []
-    for value in values:
+    results: list[str] = []
+    for variant in _variants(image):
+        try:
+            found, decoded, _points, _straight = detector.detectAndDecodeMulti(variant)
+        except cv2.error:
+            found, decoded = False, ()
+        if found:
+            results.extend(value for value in decoded if value)
+
+        value, _points, _straight = detector.detectAndDecode(variant)
         if value:
-            result.append(decode_chunk(value))
-    return result
+            results.append(value)
+
+    unique = list(dict.fromkeys(results))
+    if not unique:
+        raise QRDecodeError("No readable QR code found")
+    return unique
