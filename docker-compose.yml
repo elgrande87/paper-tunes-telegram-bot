@@ -1,0 +1,10 @@
+services:
+  paper-tunes-bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PT_WORK_DIR: /data
+    volumes:
+      - ./runtime:/data
