@@ -33,14 +33,16 @@ class EnCodecAudio:
         wav = wav.unsqueeze(0).to(self.device)
         with torch.inference_mode():
             frames = self.model.encode(wav)
-        # EnCodec returns a list of (codes, scale) frames. Keep frame boundaries;
-        # this first implementation targets single-frame files and rejects others.
-        if len(frames) != 1:
-            raise ValueError("Audio is split into multiple EnCodec frames; streaming container support is not implemented yet")
-        codes = frames[0][0].detach().cpu().numpy().astype(np.int16)
+        arrays = [frame[0].detach().cpu().numpy().astype(np.int16) for frame in frames]
+        if not arrays:
+            raise ValueError("EnCodec produced no frames")
+        if len({a.shape for a in arrays}) != 1:
+            raise ValueError("EnCodec returned variable-sized frames; PTM1 v1 requires uniform frames")
+        stacked = np.stack(arrays, axis=0)
+        # PTM1 shape = (EnCodec frame count, quantizers, codes per frame).
         return pack(
-            codes.tobytes(),
-            shape=tuple(int(x) for x in codes.shape),
+            stacked.tobytes(),
+            shape=tuple(int(x) for x in stacked.shape),
             bandwidth=self.bandwidth,
             channels=self.model.channels,
             sample_rate=self.model.sample_rate,
@@ -49,9 +51,16 @@ class EnCodecAudio:
     def decode_to_wav(self, ptm: bytes, output_path: str) -> None:
         header, payload = unpack(ptm)
         shape = (header.shape0, header.shape1, header.shape2)
-        codes = np.frombuffer(payload, dtype=np.int16).reshape(shape)
-        tensor = torch.from_numpy(codes.copy()).to(self.device).long()
+        codes = np.frombuffer(payload, dtype=np.int16)
+        expected = shape[0] * shape[1] * shape[2]
+        if codes.size != expected:
+            raise ValueError("PTM code payload does not match its declared shape")
+        frames = codes.reshape(shape)
+        decoded = []
         with torch.inference_mode():
-            wav = self.model.decode([(tensor, None)])
-        wav = wav.squeeze(0).detach().cpu()
-        torchaudio.save(output_path, wav, self.model.sample_rate)
+            for frame in frames:
+                tensor = torch.from_numpy(frame.copy()).to(self.device).long().unsqueeze(0)
+                wav = self.model.decode([(tensor, None)])
+                decoded.append(wav)
+        audio = torch.cat(decoded, dim=-1).squeeze(0).detach().cpu()
+        torchaudio.save(output_path, audio, header.sample_rate)
