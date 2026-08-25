@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-tunes-telegram-bot"
+version = "0.1.0"
+description = "Self-hosted Telegram bot for Paper Tunes QR music encoding and decoding"
+requires-python = ">=3.11"
+dependencies = [
+  "python-telegram-bot>=22,<23",
+  "Pillow>=10,<12",
+  "qrcode[pil]>=8,<9",
+  "opencv-python-headless>=4.10,<5",
+  "numpy>=2,<3",
+  "pydantic-settings>=2,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8,<9",
+]
+
+[project.scripts]
+paper-tunes-bot = "paper_tunes.bot:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
