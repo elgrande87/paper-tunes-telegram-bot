@@ -10,8 +10,6 @@ REPO_DIR="${REPO_DIR:-$HOME/paper-tunes-telegram-bot}"
 INSTALL_USER="${PT_INSTALL_USER:-paper-tunes}"
 SERVICE_NAME="paper-tunes-bot"
 
-# bash invoked through `curl | bash` has stdin attached to the pipe. Do not
-# use BASH_SOURCE to detect this: bash can define BASH_SOURCE even in stdin mode.
 if [[ "${PT_BOOTSTRAPPED:-0}" != "1" && ! -d "$REPO_DIR/.git" ]]; then
   if [[ -d "$REPO_DIR" && -n "$(ls -A "$REPO_DIR" 2>/dev/null || true)" ]]; then
     echo "Fehler: $REPO_DIR existiert bereits, ist aber kein Git-Repository."
@@ -64,7 +62,14 @@ echo "==> Dienstbenutzer vorbereiten"
 if ! id "$INSTALL_USER" >/dev/null 2>&1; then
   $SUDO useradd --system --create-home --home-dir /var/lib/paper-tunes --shell /usr/sbin/nologin "$INSTALL_USER"
 fi
-$SUDO chown -R "$INSTALL_USER":"$INSTALL_USER" "$REPO_DIR"
+
+# The repository itself stays owned by root so root can use git without
+# Git's dubious-ownership protection. Runtime data is writable by the service.
+if [[ "$(id -u)" -eq 0 ]]; then
+  chown -R root:root "$REPO_DIR"
+else
+  echo "Hinweis: Als nicht-root wird der Repository-Besitz nicht verändert."
+fi
 
 echo "==> Virtuelle Umgebung erstellen"
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then python3 -m venv "$VENV_DIR"; fi
