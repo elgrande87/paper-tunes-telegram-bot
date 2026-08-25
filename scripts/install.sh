@@ -1,74 +1,88 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Paper Tunes Telegram Bot - Raspberry Pi installer
-# Installs the project locally in a Python virtual environment and creates
-# a systemd service. No ports are opened and no external service is required.
+# Paper Tunes Telegram Bot - Raspberry Pi / DietPi installer
+# No listening port is opened. Telegram polling is used.
 
-REPO_DIR="${REPO_DIR:-$HOME/paper-tunes-telegram-bot}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 VENV_DIR="$REPO_DIR/.venv"
 ENV_FILE="$REPO_DIR/.env"
 SERVICE_NAME="paper-tunes-bot"
+INSTALL_USER="${PT_INSTALL_USER:-paper-tunes}"
 
-if [[ "$(id -u)" -eq 0 ]]; then
-  echo "Bitte nicht als root ausführen. Der Installer legt die Anwendung im Benutzerverzeichnis an."
+if [[ ! -d "$REPO_DIR/.git" ]]; then
+  echo "Fehler: Dieses Script muss aus einem geklonten Paper-Tunes-Repository ausgeführt werden."
+  echo "Bei einem privaten GitHub-Repository zuerst klonen:"
+  echo "  git clone https://github.com/elgrande87/paper-tunes-telegram-bot.git"
+  echo "  cd paper-tunes-telegram-bot"
+  echo "  sudo bash scripts/install.sh"
   exit 1
 fi
 
-command -v git >/dev/null || { echo "git fehlt."; exit 1; }
-command -v "$PYTHON_BIN" >/dev/null || { echo "$PYTHON_BIN fehlt."; exit 1; }
-
-if [[ ! -d "$REPO_DIR/.git" ]]; then
-  echo "==> Repository klonen"
-  git clone https://github.com/elgrande87/paper-tunes-telegram-bot.git "$REPO_DIR"
+if [[ "$(id -u)" -eq 0 ]]; then
+  SUDO=""
 else
-  echo "==> Bestehendes Repository aktualisieren"
-  git -C "$REPO_DIR" pull --ff-only
+  SUDO="sudo"
 fi
+
+command -v git >/dev/null || { echo "git fehlt."; exit 1; }
+command -v python3 >/dev/null || { echo "python3 fehlt."; exit 1; }
 
 cd "$REPO_DIR"
 
 echo "==> Python-Version prüfen"
-"$PYTHON_BIN" - <<'PY'
+python3 - <<'PY'
 import sys
 if sys.version_info < (3, 11):
-    raise SystemExit("Python >= 3.11 wird benötigt.")
+    raise SystemExit("Python >= 3.11 wird benötigt. Auf älteren DietPi-Versionen bitte zuerst Python 3.11+ installieren.")
 print(sys.version)
 PY
 
-echo "==> Systempakete prüfen"
-if command -v apt-get >/dev/null; then
-  echo "Für OpenCV/Audio können Systembibliotheken benötigt werden."
-  sudo apt-get update
-  sudo apt-get install -y python3-venv python3-dev build-essential libsndfile1 ffmpeg libgl1 libglib2.0-0
+echo "==> Repository aktualisieren"
+if [[ "${PT_NO_PULL:-0}" != "1" ]]; then
+  git pull --ff-only
 fi
 
-echo "==> Virtuelle Umgebung erstellen"
-"$PYTHON_BIN" -m venv "$VENV_DIR"
-"$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
+echo "==> Systempakete installieren"
+if command -v apt-get >/dev/null; then
+  $SUDO apt-get update
+  $SUDO apt-get install -y python3-venv python3-dev build-essential libsndfile1 ffmpeg libgl1 libglib2.0-0
+fi
 
-# Install the repository and its declared dependencies.
+echo "==> Dienstbenutzer vorbereiten"
+if ! id "$INSTALL_USER" >/dev/null 2>&1; then
+  $SUDO useradd --system --create-home --home-dir /var/lib/paper-tunes --shell /usr/sbin/nologin "$INSTALL_USER"
+fi
+
+# The repository may live in the invoking user's home. Make it readable by the
+# service user while keeping .env private.
+$SUDO chown -R "$INSTALL_USER":"$INSTALL_USER" "$REPO_DIR"
+
+echo "==> Virtuelle Umgebung erstellen"
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+  python3 -m venv "$VENV_DIR"
+fi
+"$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
 "$VENV_DIR/bin/pip" install -e .
 
 mkdir -p "$REPO_DIR/runtime"
+$SUDO chown -R "$INSTALL_USER":"$INSTALL_USER" "$REPO_DIR/runtime"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "==> .env anlegen"
   cp .env.example "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
-  echo
-  echo "WICHTIG: Telegram-Bot-Token eintragen:"
-  echo "  nano $ENV_FILE"
 fi
+chmod 600 "$ENV_FILE"
+$SUDO chown "$INSTALL_USER":"$INSTALL_USER" "$ENV_FILE"
 
-# Generate the deterministic test WAV. This does not download any audio.
-echo "==> Standard-Testdatei erzeugen"
+# Generate the deterministic test WAV without downloading any audio.
+echo "==> Standard-Test-WAV erzeugen"
 "$VENV_DIR/bin/python" scripts/generate_test_wav.py runtime/test.wav
+$SUDO chown "$INSTALL_USER":"$INSTALL_USER" runtime/test.wav
 
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 echo "==> systemd-Service installieren"
-sudo tee "$SERVICE_PATH" >/dev/null <<EOF
+$SUDO tee "$SERVICE_PATH" >/dev/null <<EOF
 [Unit]
 Description=Paper Tunes Telegram Bot
 After=network-online.target
@@ -76,7 +90,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$USER
+User=$INSTALL_USER
 WorkingDirectory=$REPO_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$VENV_DIR/bin/paper-tunes-bot
@@ -85,23 +99,25 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=false
 ReadWritePaths=$REPO_DIR/runtime
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME"
+$SUDO systemctl daemon-reload
+$SUDO systemctl enable "$SERVICE_NAME"
 
 if grep -q '^PT_TELEGRAM_BOT_TOKEN=123456789:REPLACE_ME' "$ENV_FILE"; then
   echo
-  echo "Installation vorbereitet, aber noch NICHT gestartet."
-  echo "1. Token eintragen: nano $ENV_FILE"
-  echo "2. Starten: sudo systemctl start $SERVICE_NAME"
+  echo "Installation vorbereitet, Bot noch nicht gestartet."
+  echo "Token eintragen:"
+  echo "  nano $ENV_FILE"
+  echo "Danach:"
+  echo "  sudo systemctl start $SERVICE_NAME"
 else
-  sudo systemctl restart "$SERVICE_NAME"
+  $SUDO systemctl restart "$SERVICE_NAME"
   echo "==> Bot gestartet"
 fi
 
