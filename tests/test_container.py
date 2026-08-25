@@ -19,3 +19,10 @@ def test_ptm1_detects_corruption():
     blob[-1] ^= 0x01
     with pytest.raises(ValueError, match="checksum"):
         unpack(bytes(blob))
+
+
+def test_ptm1_rejects_invalid_magic():
+    blob = bytearray(pack(b"paper tunes", shape=(1, 1, 11), bandwidth=3.0))
+    blob[:4] = b"XXXX"
+    with pytest.raises(ValueError, match="Unsupported PTM"):
+        unpack(bytes(blob))
