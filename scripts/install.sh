@@ -2,21 +2,37 @@
 set -euo pipefail
 
 # Paper Tunes Telegram Bot - Raspberry Pi / DietPi installer
+# Works both from a cloned repository and via: curl .../install.sh | bash
 # No listening port is opened. Telegram polling is used.
+
+REPO_URL="${PT_REPO_URL:-https://github.com/elgrande87/paper-tunes-telegram-bot.git}"
+REPO_DIR="${REPO_DIR:-$HOME/paper-tunes-telegram-bot}"
+INSTALL_USER="${PT_INSTALL_USER:-paper-tunes}"
+SERVICE_NAME="paper-tunes-bot"
+
+if [[ "${PT_BOOTSTRAPPED:-0}" != "1" ]]; then
+  # When executed through `curl | bash`, BASH_SOURCE is unavailable and there
+  # is no local repository yet. Clone it and re-execute the real installer.
+  if [[ -z "${BASH_SOURCE[0]:-}" || ! -d "${REPO_DIR}/.git" ]]; then
+    if [[ -d "$REPO_DIR" && ! -d "$REPO_DIR/.git" ]]; then
+      echo "Fehler: $REPO_DIR existiert bereits, ist aber kein Git-Repository."
+      echo "Bitte REPO_DIR auf einen freien Pfad setzen oder das Verzeichnis entfernen."
+      exit 1
+    fi
+    echo "==> Paper Tunes Repository klonen"
+    git clone "$REPO_URL" "$REPO_DIR"
+    export PT_BOOTSTRAPPED=1
+    exec bash "$REPO_DIR/scripts/install.sh"
+  fi
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 VENV_DIR="$REPO_DIR/.venv"
 ENV_FILE="$REPO_DIR/.env"
-SERVICE_NAME="paper-tunes-bot"
-INSTALL_USER="${PT_INSTALL_USER:-paper-tunes}"
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
-  echo "Fehler: Dieses Script muss aus einem geklonten Paper-Tunes-Repository ausgeführt werden."
-  echo "Bei einem privaten GitHub-Repository zuerst klonen:"
-  echo "  git clone https://github.com/elgrande87/paper-tunes-telegram-bot.git"
-  echo "  cd paper-tunes-telegram-bot"
-  echo "  sudo bash scripts/install.sh"
+  echo "Fehler: Repository konnte nicht vorbereitet werden: $REPO_DIR"
   exit 1
 fi
 
@@ -40,7 +56,7 @@ print(sys.version)
 PY
 
 echo "==> Repository aktualisieren"
-if [[ "${PT_NO_PULL:-0}" != "1" ]]; then
+if [[ "${PT_NO_PULL:-0}" != "1" && "${PT_BOOTSTRAPPED:-0}" != "1" ]]; then
   git pull --ff-only
 fi
 
@@ -55,8 +71,6 @@ if ! id "$INSTALL_USER" >/dev/null 2>&1; then
   $SUDO useradd --system --create-home --home-dir /var/lib/paper-tunes --shell /usr/sbin/nologin "$INSTALL_USER"
 fi
 
-# The repository may live in the invoking user's home. Make it readable by the
-# service user while keeping .env private.
 $SUDO chown -R "$INSTALL_USER":"$INSTALL_USER" "$REPO_DIR"
 
 echo "==> Virtuelle Umgebung erstellen"
@@ -75,7 +89,6 @@ fi
 chmod 600 "$ENV_FILE"
 $SUDO chown "$INSTALL_USER":"$INSTALL_USER" "$ENV_FILE"
 
-# Generate the deterministic test WAV without downloading any audio.
 echo "==> Standard-Test-WAV erzeugen"
 "$VENV_DIR/bin/python" scripts/generate_test_wav.py runtime/test.wav
 $SUDO chown "$INSTALL_USER":"$INSTALL_USER" runtime/test.wav
